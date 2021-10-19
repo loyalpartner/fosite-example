@@ -1,12 +1,17 @@
 package authorizationserver
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/ory/fosite"
 	"github.com/ory/fosite/compose"
+	_oauth2 "github.com/ory/fosite/handler/oauth2"
+
 	"github.com/ory/fosite/handler/openid"
 	"github.com/ory/fosite/storage"
 	"github.com/ory/fosite/token/jwt"
@@ -74,7 +79,79 @@ var (
 )
 
 // Build a fosite instance with all OAuth2 and OpenID Connect handlers enabled, plugging in our configurations as specified above.
-var oauth2 = compose.ComposeAllEnabled(config, store, secret, privateKey)
+//var oauth2 = compose.ComposeAllEnabled(config, store, secret, privateKey)
+var oauth2 = compose.Compose(
+	config,
+	store,
+	&compose.CommonStrategy{
+		CoreStrategy:               compose.NewOAuth2HMACStrategy(config, secret, nil),
+		OpenIDConnectTokenStrategy: compose.NewOpenIDConnectStrategy(config, privateKey),
+		JWTStrategy: &jwt.RS256JWTStrategy{
+			PrivateKey: privateKey,
+		},
+	},
+	nil,
+
+	compose.OAuth2AuthorizeExplicitFactory,
+	compose.OAuth2AuthorizeImplicitFactory,
+	compose.OAuth2ClientCredentialsGrantFactory,
+	OAuth2RefreshTokenGrantFactory,
+	compose.OAuth2ResourceOwnerPasswordCredentialsFactory,
+	compose.RFC7523AssertionGrantFactory,
+
+	compose.OpenIDConnectExplicitFactory,
+	compose.OpenIDConnectImplicitFactory,
+	compose.OpenIDConnectHybridFactory,
+	compose.OpenIDConnectRefreshFactory,
+
+	compose.OAuth2TokenIntrospectionFactory,
+	compose.OAuth2TokenRevocationFactory,
+
+	compose.OAuth2PKCEFactory,
+)
+
+type TokenHandler _oauth2.RefreshTokenGrantHandler
+
+func (c *TokenHandler) PopulateTokenEndpointResponse(ctx context.Context, requester fosite.AccessRequester, responder fosite.AccessResponder) error {
+	fmt.Print("PopulateToken")
+	return nil
+}
+
+// HandleTokenEndpointRequest handles an authorize request. If the handler is not responsible for handling
+// the request, this method should return ErrUnknownRequest and otherwise handle the request.
+func (c *TokenHandler) HandleTokenEndpointRequest(ctx context.Context, requester fosite.AccessRequester) error {
+	fmt.Print("HandleTokenEndpointRequest")
+	return nil
+}
+
+// CanSkipClientAuth indicates if client authentication can be skipped. By default it MUST be false, unless you are
+// implementing extension grant type, which allows unauthenticated client. CanSkipClientAuth must be called
+// before HandleTokenEndpointRequest to decide, if AccessRequester will contain authenticated client.
+func (c *TokenHandler) CanSkipClientAuth(requester fosite.AccessRequester) bool {
+	fmt.Print("Skip")
+	return false
+}
+
+// CanHandleRequest indicates, if TokenEndpointHandler can handle this request or not. If true,
+// HandleTokenEndpointRequest can be called.
+func (c *TokenHandler) CanHandleTokenEndpointRequest(requester fosite.AccessRequester) bool {
+	fmt.Print("Handle")
+
+	return true
+}
+
+func OAuth2RefreshTokenGrantFactory(config *compose.Config, storage interface{}, strategy interface{}) interface{} {
+	return &TokenHandler{
+		AccessTokenStrategy:      strategy.(_oauth2.AccessTokenStrategy),
+		RefreshTokenStrategy:     strategy.(_oauth2.RefreshTokenStrategy),
+		TokenRevocationStorage:   storage.(_oauth2.TokenRevocationStorage),
+		AccessTokenLifespan:      config.GetAccessTokenLifespan(),
+		RefreshTokenLifespan:     config.GetRefreshTokenLifespan(),
+		ScopeStrategy:            config.GetScopeStrategy(),
+		AudienceMatchingStrategy: config.GetAudienceStrategy(),
+		RefreshTokenScopes:       config.GetRefreshTokenScopes(),
+	}
+}
 
 // A session is passed from the `/auth` to the `/token` endpoint. You probably want to store data like: "Who made the request",
 // "What organization does that person belong to" and so on.

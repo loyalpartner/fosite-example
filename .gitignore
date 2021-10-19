@@ -5,3 +5,4 @@
 *.exe
 cover.out
 vendor/
+__debug_bin
