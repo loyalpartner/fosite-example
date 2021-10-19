@@ -4,13 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/compose"
 	_oauth2 "github.com/ory/fosite/handler/oauth2"
+	"github.com/ory/x/errorsx"
 
 	"github.com/ory/fosite/handler/openid"
 	"github.com/ory/fosite/storage"
@@ -110,38 +110,90 @@ var oauth2 = compose.Compose(
 	compose.OAuth2PKCEFactory,
 )
 
-type TokenHandler _oauth2.RefreshTokenGrantHandler
+type RefreshTokenGrantHandler _oauth2.RefreshTokenGrantHandler
 
-func (c *TokenHandler) PopulateTokenEndpointResponse(ctx context.Context, requester fosite.AccessRequester, responder fosite.AccessResponder) error {
-	fmt.Print("PopulateToken")
-	return nil
+func (r *RefreshTokenGrantHandler) PopulateTokenEndpointResponse(ctx context.Context, requester fosite.AccessRequester, responder fosite.AccessResponder) error {
+	c := _oauth2.RefreshTokenGrantHandler(*r)
+
+	if !c.CanHandleTokenEndpointRequest(requester) {
+		return errorsx.WithStack(fosite.ErrUnknownRequest)
+	}
+
+	accessToken, accessSignature, err := c.AccessTokenStrategy.GenerateAccessToken(ctx, requester)
+	if err != nil {
+		return errorsx.WithStack(fosite.ErrServerError.WithWrap(err).WithDebug(err.Error()))
+	}
+
+	//refreshToken, refreshSignature, err := c.RefreshTokenStrategy.GenerateRefreshToken(ctx, requester)
+	//if err != nil {
+	//	return errorsx.WithStack(fosite.ErrServerError.WithWrap(err).WithDebug(err.Error()))
+	//}
+
+	signature := c.RefreshTokenStrategy.RefreshTokenSignature(requester.GetRequestForm().Get("refresh_token"))
+
+	//ctx, err = storage.MaybeBeginTx(ctx, c.TokenRevocationStorage)
+	//if err != nil {
+	//	return errorsx.WithStack(fosite.ErrServerError.WithWrap(err).WithDebug(err.Error()))
+	//}
+
+	ts, err := c.TokenRevocationStorage.GetRefreshTokenSession(ctx, signature, nil)
+	if err != nil {
+		//return c.handleRefreshTokenEndpointStorageError(ctx, true, err)
+		// TODO: 这里需要自己实现 accessToken 过期的逻辑
+		//} else if err := c.TokenRevocationStorage.RevokeAccessToken(ctx, ts.GetID()); err != nil {
+		//return c.handleRefreshTokenEndpointStorageError(ctx, true, err)
+		//} else if err := c.TokenRevocationStorage.RevokeRefreshToken(ctx, ts.GetID()); err != nil {
+		//return c.handleRefreshTokenEndpointStorageError(ctx, true, err)
+	}
+
+	storeReq := requester.Sanitize([]string{})
+	storeReq.SetID(ts.GetID())
+
+	if err := c.TokenRevocationStorage.CreateAccessTokenSession(ctx, accessSignature, storeReq); err != nil {
+		//return c.handleRefreshTokenEndpointStorageError(ctx, true, err)
+	}
+
+	//if err := c.TokenRevocationStorage.CreateRefreshTokenSession(ctx, refreshSignature, storeReq); err != nil {
+	//	//return c.handleRefreshTokenEndpointStorageError(ctx, true, err)
+	//}
+
+	responder.SetAccessToken(accessToken)
+	responder.SetTokenType("bearer")
+	//responder.SetExpiresIn(getExpiresIn(requester, fosite.AccessToken, c.AccessTokenLifespan, time.Now().UTC()))
+	responder.SetScopes(requester.GetGrantedScopes())
+	//responder.SetExtra("refresh_token", refreshToken)
+
+	if err := storage.MaybeCommitTx(ctx, c.TokenRevocationStorage); err != nil {
+		//return c.handleRefreshTokenEndpointStorageError(ctx, false, err)
+	}
+
+	return err
 }
 
 // HandleTokenEndpointRequest handles an authorize request. If the handler is not responsible for handling
 // the request, this method should return ErrUnknownRequest and otherwise handle the request.
-func (c *TokenHandler) HandleTokenEndpointRequest(ctx context.Context, requester fosite.AccessRequester) error {
-	fmt.Print("HandleTokenEndpointRequest")
-	return nil
+func (c *RefreshTokenGrantHandler) HandleTokenEndpointRequest(ctx context.Context, requester fosite.AccessRequester) error {
+	h := _oauth2.RefreshTokenGrantHandler(*c)
+	return h.HandleTokenEndpointRequest(ctx, requester)
 }
 
 // CanSkipClientAuth indicates if client authentication can be skipped. By default it MUST be false, unless you are
 // implementing extension grant type, which allows unauthenticated client. CanSkipClientAuth must be called
 // before HandleTokenEndpointRequest to decide, if AccessRequester will contain authenticated client.
-func (c *TokenHandler) CanSkipClientAuth(requester fosite.AccessRequester) bool {
-	fmt.Print("Skip")
-	return false
+func (c *RefreshTokenGrantHandler) CanSkipClientAuth(requester fosite.AccessRequester) bool {
+	h := _oauth2.RefreshTokenGrantHandler(*c)
+	return h.CanSkipClientAuth(requester)
 }
 
 // CanHandleRequest indicates, if TokenEndpointHandler can handle this request or not. If true,
 // HandleTokenEndpointRequest can be called.
-func (c *TokenHandler) CanHandleTokenEndpointRequest(requester fosite.AccessRequester) bool {
-	fmt.Print("Handle")
-
-	return true
+func (c *RefreshTokenGrantHandler) CanHandleTokenEndpointRequest(requester fosite.AccessRequester) bool {
+	h := _oauth2.RefreshTokenGrantHandler(*c)
+	return h.CanHandleTokenEndpointRequest(requester)
 }
 
 func OAuth2RefreshTokenGrantFactory(config *compose.Config, storage interface{}, strategy interface{}) interface{} {
-	return &TokenHandler{
+	return &RefreshTokenGrantHandler{
 		AccessTokenStrategy:      strategy.(_oauth2.AccessTokenStrategy),
 		RefreshTokenStrategy:     strategy.(_oauth2.RefreshTokenStrategy),
 		TokenRevocationStorage:   storage.(_oauth2.TokenRevocationStorage),
